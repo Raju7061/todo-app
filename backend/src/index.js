@@ -16,7 +16,7 @@ app.use(express.json());
 
 // PostgreSQL connection pool
 const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
+  host: process.env.DB_HOST || 'postgres-service',
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'my_todo_db',
   user: process.env.DB_USER || 'my_app_user',

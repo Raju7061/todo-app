@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: todo-frontend:v1   # Built locally with minikube docker-env
+          image: 2024dock/todo-frontend:v1   # Built locally with minikube docker-env
           imagePullPolicy: Always        # Use local minikube image registry
           ports:
             - containerPort: 80

@@ -19,7 +19,7 @@ spec:
       containers:
         - name: backend
           image: todo-backend:v1    # Built locally with minikube docker-env
-          imagePullPolicy: Never        # Use local minikube image registry
+          imagePullPolicy: Always        # Use local minikube image registry
           ports:
             - containerPort: 5000
           env:

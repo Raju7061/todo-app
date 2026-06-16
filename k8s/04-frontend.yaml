@@ -18,8 +18,8 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: 2024dock/todo-frontend:v2   # Built locally with minikube docker-env
-          imagePullPolicy: Always        # Use local minikube image registry
+          image: 2024dock/todo-frontend:v1
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
           livenessProbe:
@@ -54,5 +54,5 @@ spec:
   ports:
     - port: 80
       targetPort: 80
-      nodePort: 30080      # Access via <minikube-ip>:30080
+      nodePort: 30080
   type: NodePort

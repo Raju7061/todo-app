@@ -13,7 +13,9 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: todo.local           # Add to /etc/hosts: <minikube-ip> todo.local
+    - host: todo.local
+      # Production-style alternative without buying a domain:
+      # host: todo.<EC2_PUBLIC_IP>.nip.io
       http:
         paths:
           - path: /api

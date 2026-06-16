@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: 2024dock/todo-backend:v2
+          image: 2024dock/todo-backend:v3
           imagePullPolicy: Always
           ports:
             - containerPort: 5000

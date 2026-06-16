@@ -13,9 +13,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: todo.local
-      # Production-style alternative without buying a domain:
-      # host: todo.<EC2_PUBLIC_IP>.nip.io
+    - host: todo.15.207.111.139.nip.io
       http:
         paths:
           - path: /api

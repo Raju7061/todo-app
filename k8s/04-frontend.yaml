@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: 2024dock/todo-frontend:v2
+          image: 2024dock/todo-frontend:v3
           imagePullPolicy: Always
           ports:
             - containerPort: 80
@@ -54,5 +54,4 @@ spec:
   ports:
     - port: 80
       targetPort: 80
-      nodePort: 30080
-  type: NodePort
+  type: ClusterIP

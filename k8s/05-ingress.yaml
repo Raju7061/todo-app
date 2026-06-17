@@ -7,7 +7,6 @@ metadata:
   name: todo-ingress
   namespace: todo-app
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
 spec:

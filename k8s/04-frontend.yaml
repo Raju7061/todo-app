@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: 2024dock/todo-frontend:v3
+          image: 2024dock/todo-frontend:v4
           imagePullPolicy: Always
           ports:
             - containerPort: 80

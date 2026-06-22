@@ -3,7 +3,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: todo-config
-  namespace: todo-app
+  namespace: raju
 data:
   DB_HOST: "192.168.49.1"
   DB_PORT: "5432"

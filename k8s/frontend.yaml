@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: frontend
-  namespace: todo-app
+  namespace: raju
   labels:
     app: frontend
 spec:
@@ -47,7 +47,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: frontend-service
-  namespace: todo-app
+  namespace: raju
 spec:
   selector:
     app: frontend

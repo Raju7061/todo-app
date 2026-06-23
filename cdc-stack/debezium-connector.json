@@ -1,0 +1,14 @@
+{
+  "name": "todo-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "13.200.105.164",
+    "database.port": "5432",
+    "database.user": "my_app_user",
+    "database.password": "1234",
+    "database.dbname": "my_todo_db",
+    "database.server.name": "todo-server",
+    "table.include.list": "public.todos",
+    "plugin.name": "pgoutput"
+  }
+}

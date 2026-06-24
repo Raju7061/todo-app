@@ -1,14 +1,22 @@
 {
-  "name": "todo-connector",
+  "name": "postgres-connector",
   "config": {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
-    "database.hostname": "13.200.105.164",
+    "database.hostname": "host.docker.internal",
     "database.port": "5432",
     "database.user": "my_app_user",
     "database.password": "1234",
     "database.dbname": "my_todo_db",
-    "database.server.name": "todo-server",
+    "topic.prefix": "todo",
     "table.include.list": "public.todos",
-    "plugin.name": "pgoutput"
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_slot",
+    "publication.name": "debezium_pub",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter.schemas.enable": "false",
+    "decimal.handling.mode": "string",
+    "snapshot.mode": "initial"
   }
 }

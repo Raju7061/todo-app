@@ -1,29 +1,139 @@
-version: '3.8'
+version: '3.9'
+
+# EC2 native PostgreSQL use kar rahe hain (no postgres container)
+# Debezium → Kafka → Elasticsearch pipeline
+
 services:
+
+  # ── 1. Zookeeper (Kafka ka coordinator) ─────────────────────
   zookeeper:
-    image: quay.io/debezium/zookeeper:2.5
-    ports: [2181:2181]
-
-  kafka:
-    image: quay.io/debezium/kafka:2.5
-    ports: [9092:9092]
-    links: [zookeeper]
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: cdc-zookeeper
+    restart: unless-stopped
     environment:
-      ZOOKEEPER_CONNECT: zookeeper:2181
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - cdc-net
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  connect:
-    image: quay.io/debezium/connect:2.5
-    ports: [8083:8083]
+  # ── 2. Kafka (message broker) ───────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: cdc-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+    ports:
+      - "29092:29092"
+    networks:
+      - cdc-net
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── 3. Kafka Connect + Debezium (CDC engine) ────────────────
+  kafka-connect:
+    image: debezium/connect:2.4
+    container_name: cdc-debezium
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
-      GROUP_ID: 1
-      CONFIG_STORAGE_TOPIC: my_connect_configs
-      OFFSET_STORAGE_TOPIC: my_connect_offsets
-      STATUS_STORAGE_TOPIC: my_connect_statuses
+      GROUP_ID: debezium-group
+      CONFIG_STORAGE_TOPIC: debezium_config
+      OFFSET_STORAGE_TOPIC: debezium_offsets
+      STATUS_STORAGE_TOPIC: debezium_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+    ports:
+      - "8083:8083"
+    networks:
+      - cdc-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # EC2 native postgres tak pahunchne ke liye
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
 
+  # ── 4. Elasticsearch (search engine / destination) ──────────
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.0
-    ports: [9200:9200]
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: cdc-elasticsearch
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - cdc-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ── 5. Kibana (Elasticsearch UI) ────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: cdc-kibana
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - cdc-net
+
+  # ── 6. Kafka UI (Kafka ko browser mein dekhne ke liye) ──────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: cdc-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    ports:
+      - "8080:8080"
+    networks:
+      - cdc-net
+
+volumes:
+  es_data:
+
+networks:
+  cdc-net:
+    driver: bridge

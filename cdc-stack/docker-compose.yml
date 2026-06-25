@@ -1,11 +1,8 @@
 version: '3.9'
 
-# EC2 native PostgreSQL use kar rahe hain (no postgres container)
-# Debezium → Kafka → Elasticsearch pipeline
-
 services:
 
-  # ── 1. Zookeeper (Kafka ka coordinator) ─────────────────────
+  # ── 1. Zookeeper ─────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: cdc-zookeeper
@@ -23,7 +20,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── 2. Kafka (message broker) ───────────────────────────────
+  # ── 2. Kafka ──────────────────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: cdc-kafka
@@ -50,7 +47,7 @@ services:
       timeout: 10s
       retries: 5
 
-  # ── 3. Kafka Connect + Debezium (CDC engine) ────────────────
+  # ── 3. Debezium (Kafka Connect) ───────────────────────────────
   kafka-connect:
     image: debezium/connect:2.4
     container_name: cdc-debezium
@@ -72,14 +69,14 @@ services:
     networks:
       - cdc-net
     extra_hosts:
-      - "host.docker.internal:host-gateway"   # EC2 native postgres tak pahunchne ke liye
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 10
 
-  # ── 4. Elasticsearch (search engine / destination) ──────────
+  # ── 4. Elasticsearch ──────────────────────────────────────────
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: cdc-elasticsearch
@@ -100,7 +97,25 @@ services:
       timeout: 10s
       retries: 10
 
-  # ── 5. Kibana (Elasticsearch UI) ────────────────────────────
+  # ── 5. Logstash (Kafka → Elasticsearch bridge) ────────────────
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: cdc-logstash
+    restart: unless-stopped
+    environment:
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+      - XPACK_MONITORING_ENABLED=false
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - cdc-net
+
+  # ── 6. Kibana ─────────────────────────────────────────────────
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.0
     container_name: cdc-kibana
@@ -115,7 +130,7 @@ services:
     networks:
       - cdc-net
 
-  # ── 6. Kafka UI (Kafka ko browser mein dekhne ke liye) ──────
+  # ── 7. Kafka UI ───────────────────────────────────────────────
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: cdc-kafka-ui

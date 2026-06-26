@@ -33,6 +33,8 @@
 | Kibana | http://13.200.105.164:5601 |
 | Elasticsearch | http://13.200.105.164:9200 |
 | Debezium API | http://13.200.105.164:8083 |
+| GRAFANA |  http://13.200.105.164:32000 |
+| Prometheus |  http://13.200.105.164:30090|
 | Docker Hub | 2024dock |
 | DB Name | my_todo_db |
 | DB User | my_app_user |

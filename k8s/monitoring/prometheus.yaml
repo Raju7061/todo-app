@@ -3,7 +3,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: prometheus-pvc
-  namespace: monitoring
+  namespace: raju
 spec:
   accessModes:
     - ReadWriteOnce

@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: prometheus-config
-  namespace: raju
+  namespace: monitoring
 data:
   prometheus.yml: |
     global:

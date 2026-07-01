@@ -1,5 +1,5 @@
 # 🚀 Complete DevOps Setup Guide
-## Todo App + CDC Pipeline on EC2 + Minikube + Kubernetes
+## Todo App + CDC Pipeline + Monitoring on EC2 + Minikube + Kubernetes + FluxCD
 
 ---
 
@@ -12,12 +12,15 @@
 5. [Todo App — Local Run](#5-todo-app--local-run)
 6. [Docker Image Build & Push](#6-docker-image-build--push)
 7. [Minikube Setup](#7-minikube-setup)
-8. [Kubernetes Deployment](#8-kubernetes-deployment)
-9. [Production Domain Setup](#9-production-domain-setup)
-10. [CDC Pipeline Setup](#10-cdc-pipeline-setup)
-11. [Restart Guide — Next Time](#11-restart-guide--next-time)
-12. [All Files Content](#12-all-files-content)
-13. [Troubleshooting](#13-troubleshooting)
+8. [Flux CD Setup — GitOps](#8-flux-cd-setup--gitops)
+9. [Kubernetes Deployment via Flux](#9-kubernetes-deployment-via-flux)
+10. [Production Domain Setup](#10-production-domain-setup)
+11. [Monitoring — Prometheus + Grafana](#11-monitoring--prometheus--grafana)
+12. [CDC Pipeline Setup](#12-cdc-pipeline-setup)
+13. [Permanent Tunnels — systemd](#13-permanent-tunnels--systemd)
+14. [Restart Guide — Next Time](#14-restart-guide--next-time)
+15. [All K8s Files Content](#15-all-k8s-files-content)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -28,17 +31,20 @@
 | EC2 Public IP (Elastic) | 13.200.105.164 |
 | EC2 Instance Type | m7i-flex.large (8GB RAM, 2 vCPU) |
 | OS | Ubuntu 22.04 |
+| Docker Hub Username | 2024dock |
+| GitHub Repo | https://github.com/Raju7061/todo-app.git |
+| GitHub Branch | main |
+| DB Name | my_todo_db |
+| DB User | my_app_user |
+| DB Password | 1234 |
 | Todo App URL | http://todo.13.200.105.164.nip.io |
+| Prometheus URL | http://13.200.105.164:30090 |
+| Grafana URL | http://13.200.105.164:32000 |
+| Grafana Login | admin / admin123 |
 | Kafka UI | http://13.200.105.164:8080 |
 | Kibana | http://13.200.105.164:5601 |
 | Elasticsearch | http://13.200.105.164:9200 |
 | Debezium API | http://13.200.105.164:8083 |
-| GRAFANA |  http://13.200.105.164:32000 |
-| Prometheus |  http://13.200.105.164:30090|
-| Docker Hub | 2024dock |
-| DB Name | my_todo_db |
-| DB User | my_app_user |
-| DB Password | 1234 |
 
 ---
 
@@ -48,12 +54,18 @@
 Internet
     │
     ▼
-EC2 (13.200.105.164) — Elastic IP
+EC2 (13.200.105.164) — Elastic IP (kabhi change nahi hoga)
     │
     ├── Minikube (Docker driver) — 192.168.49.2
     │       ├── Nginx Ingress (port 80)
     │       │       ├── /api  → backend pods (Node.js)
     │       │       └── /     → frontend pods (React+Nginx)
+    │       ├── Monitoring namespace
+    │       │       ├── Prometheus (port 30090)
+    │       │       ├── Grafana (port 32000)
+    │       │       ├── Node Exporter
+    │       │       ├── Kube State Metrics
+    │       │       └── PostgreSQL Exporter
     │       └── HPA (auto scaling)
     │
     ├── PostgreSQL (native EC2 — port 5432)
@@ -63,12 +75,15 @@ EC2 (13.200.105.164) — Elastic IP
             ├── Zookeeper (port 2181)
             ├── Kafka (port 29092)
             ├── Debezium/Kafka Connect (port 8083)
-            ├── Logstash (Kafka → Elasticsearch bridge)
+            ├── Logstash (Kafka → Elasticsearch)
             ├── Elasticsearch (port 9200)
             ├── Kibana (port 5601)
             └── Kafka UI (port 8080)
 
-CDC Data Flow:
+GitOps Flow:
+Git Push → FluxCD detects → kubectl apply → Pods update
+
+CDC Flow:
 PostgreSQL (WAL) → Debezium → Kafka → Logstash → Elasticsearch → Kibana
 
 Request Flow:
@@ -77,27 +92,26 @@ Browser → EC2:80 → socat → Minikube Ingress → pods → PostgreSQL
 
 ---
 
-## 2. EC2 Security Group — Inbound Rules
+## 3. EC2 Machine Setup
+
+### EC2 Security Group — Inbound Rules
 
 | Port | Service |
 |------|---------|
 | 22 | SSH |
-| 80 | HTTP (Todo App via Ingress) |
+| 80 | HTTP (Todo App) |
 | 8080 | Kafka UI |
 | 8083 | Debezium API |
 | 9200 | Elasticsearch |
 | 5601 | Kibana |
-| 30080 | K8s NodePort (optional) |
-
----
-
-## 3. EC2 Machine Setup
+| 30090 | Prometheus |
+| 32000 | Grafana |
 
 ### Install Docker
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y docker.io socat netcat-openbsd curl unzip
+sudo apt-get install -y docker.io socat netcat-openbsd curl unzip git
 sudo usermod -aG docker $USER
 newgrp docker
 
@@ -123,6 +137,14 @@ curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.
 sudo install kubectl /usr/local/bin/kubectl
 rm kubectl
 kubectl version --client
+```
+
+### Install Flux CLI
+
+```bash
+curl -s https://fluxcd.io/install.sh | sudo bash
+flux version
+# Expected: flux version 2.8.8
 ```
 
 ---
@@ -151,13 +173,13 @@ ALTER USER my_app_user REPLICATION;
 \q
 ```
 
-### postgresql.conf — Edit config
+### postgresql.conf — WAL + Listen Address
 
 ```bash
 sudo nano /etc/postgresql/*/main/postgresql.conf
 ```
 
-Set these values:
+Set:
 ```
 listen_addresses = '*'
 wal_level = logical
@@ -171,13 +193,13 @@ max_wal_senders = 5
 sudo nano /etc/postgresql/*/main/pg_hba.conf
 ```
 
-Add at the end:
+Add at end:
 ```
-# Minikube pods ke liye
+# Minikube pods
 host    my_todo_db    my_app_user    192.168.49.0/24    md5
 host    my_todo_db    my_app_user    172.17.0.0/16      md5
 
-# Debezium CDC replication ke liye
+# Debezium replication
 local   replication     my_app_user                     trust
 host    replication     my_app_user    172.17.0.0/16    md5
 host    replication     my_app_user    172.18.0.0/16    md5
@@ -189,22 +211,22 @@ host    replication     my_app_user    127.0.0.1/32     md5
 ```bash
 sudo systemctl restart postgresql
 
-# Verify WAL level
+# WAL level check
 sudo -u postgres psql -c "SHOW wal_level;"
-# Expected output: logical
+# Expected: logical
 
-# Verify listening on all interfaces
+# Interface check
 sudo ss -tlnp | grep 5432
-# Expected: 0.0.0.0:5432  (NOT 127.0.0.1)
+# Expected: 0.0.0.0:5432
 ```
 
-### Setup for Debezium CDC (One-time)
+### Debezium CDC Setup (one-time)
 
 ```bash
-# REPLICA IDENTITY set karo
+# REPLICA IDENTITY
 sudo -u postgres psql -d my_todo_db -c "ALTER TABLE todos REPLICA IDENTITY FULL;"
 
-# Publication banao (superuser se)
+# Publication
 sudo -u postgres psql -d my_todo_db -c "CREATE PUBLICATION debezium_pub FOR TABLE public.todos;"
 
 # Verify
@@ -238,23 +260,21 @@ npm start    # http://localhost:5000
 # Frontend (new terminal)
 cd todo-app/frontend
 REACT_APP_API_URL=http://localhost:5000 npm install
-REACT_APP_API_URL=http://localhost:5000 npm start    # http://localhost:3000
+REACT_APP_API_URL=http://localhost:5000 npm start
 ```
 
-### Or Docker Compose (easiest)
+### Docker Compose (easiest)
 
 ```bash
 cd todo-app
 docker-compose up --build
-# Frontend: http://localhost:3000
-# Backend:  http://localhost:5000
 ```
 
 ---
 
 ## 6. Docker Image Build & Push
 
-> **IMPORTANT:** `node_modules` locally install karo pehle. EC2 pe Docker ke andar `npm install` karne se DNS timeout hota hai. Dockerfiles local `node_modules` copy karti hain.
+> **IMPORTANT:** `node_modules` locally install karo pehle. EC2 mein Docker ke andar `npm install` karne se DNS timeout hota hai.
 
 ### Backend
 
@@ -271,19 +291,17 @@ docker push 2024dock/todo-backend:v1
 cd todo-app/frontend
 npm install
 
-# REACT_APP_API_URL build time pe image mein bake hota hai
 docker build \
   --build-arg REACT_APP_API_URL=http://todo.13.200.105.164.nip.io \
   -t 2024dock/todo-frontend:v1 .
 docker push 2024dock/todo-frontend:v1
 ```
 
-### Verify frontend image mein sahi URL baked hai
+### Verify
 
 ```bash
 docker run --rm 2024dock/todo-frontend:v1 \
   grep -o "13.200.105.164" /usr/share/nginx/html/static/js/main.*.js
-# Output: 13.200.105.164
 ```
 
 ---
@@ -299,11 +317,413 @@ minikube addons enable metrics-server
 
 # Verify
 minikube status
-minikube ip    # Usually: 192.168.49.2
+minikube ip    # 192.168.49.2
 kubectl get nodes
 ```
 
-### Port 80 forward — Permanent systemd service
+---
+
+## 8. Flux CD Setup — GitOps
+
+### GitHub Personal Access Token banao
+
+```
+GitHub → Settings → Developer Settings
+→ Personal Access Tokens → Tokens (classic)
+→ Generate new token
+→ Scopes: repo (full), read:org
+→ Copy token
+```
+
+### Flux Bootstrap karo (GitHub)
+
+```bash
+export GITHUB_TOKEN=<aapka_github_token>
+export GITHUB_USER=Raju7061
+
+flux bootstrap github \
+  --owner=$GITHUB_USER \
+  --repository=todo-app \
+  --branch=main \
+  --path=clusters/my-cluster \
+  --personal \
+  --token-auth
+```
+
+Yeh command:
+- Flux components install karta hai cluster mein
+- `clusters/my-cluster/flux-system/` folder create karta hai
+- GitHub repo se sync shuru ho jaata hai
+
+### Verify Flux installation
+
+```bash
+flux check
+flux get sources git
+flux get kustomizations
+kubectl get pods -n flux-system
+```
+
+### GitRepository file (auto-created by bootstrap)
+
+`clusters/my-cluster/todo-app-source.yaml`:
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: todo-app-source
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  url: https://github.com/Raju7061/todo-app.git
+  ref:
+    branch: main
+```
+
+### Kustomization file
+
+`clusters/my-cluster/todo-app-kustomization.yaml`:
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: todo-app-deploy
+  namespace: flux-system
+spec:
+  interval: 2m0s
+  path: "./k8s"
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: todo-app-source
+```
+
+> **Note:** `targetNamespace` mat likho — har YAML file mein explicitly `namespace:` likho.
+
+### Monitoring Kustomization
+
+`clusters/my-cluster/monitoring-kustomization.yaml`:
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: monitoring-deploy
+  namespace: flux-system
+spec:
+  interval: 2m0s
+  path: "./k8s/monitoring"
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: todo-app-source
+```
+
+### Git push karo
+
+```bash
+cd ~/todo-app
+git add .
+git commit -m "Add Flux kustomizations"
+git push
+
+# Flux sync force karo
+flux reconcile source git todo-app-source
+flux reconcile kustomization todo-app-deploy
+flux reconcile kustomization monitoring-deploy
+
+# Status
+flux get kustomizations
+```
+
+### Flux daily use commands
+
+```bash
+# Sync force karo (git push ke baad)
+flux reconcile source git todo-app-source
+
+# Status dekho
+flux get kustomizations
+flux get sources git
+
+# Logs dekho
+flux logs --kind=Kustomization --name=todo-app-deploy -n flux-system
+flux logs --kind=Kustomization --name=monitoring-deploy -n flux-system
+
+# Kisi issue ko debug karo
+kubectl describe kustomization todo-app-deploy -n flux-system
+```
+
+---
+
+## 9. Kubernetes Deployment via Flux
+
+### Folder Structure
+
+```
+todo-app/
+├── clusters/
+│   └── my-cluster/
+│       ├── flux-system/
+│       │   ├── gotk-components.yaml
+│       │   ├── gotk-sync.yaml
+│       │   └── kustomization.yaml
+│       ├── todo-app-source.yaml
+│       ├── todo-app-kustomization.yaml
+│       └── monitoring-kustomization.yaml
+└── k8s/
+    ├── kustomization.yaml           ← todo app files list
+    ├── namespace.yaml               ← namespace: raju
+    ├── configmap.yaml
+    ├── sealed-secrets.yaml
+    ├── backend.yaml
+    ├── frontend.yaml
+    ├── ingress.yaml
+    ├── hpa.yaml
+    └── monitoring/
+        ├── kustomization.yaml       ← monitoring files list
+        ├── namespace.yaml           ← namespace: monitoring
+        ├── prometheus-rbc.yaml
+        ├── prometheus-cm.yaml
+        ├── prometheus.yaml
+        ├── node-exporter.yaml
+        ├── postgres-exporter.yaml
+        ├── grafana.yaml
+        └── kube-state.yaml
+```
+
+### k8s/kustomization.yaml
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - sealed-secrets.yaml
+  - backend.yaml
+  - frontend.yaml
+  - ingress.yaml
+  - hpa.yaml
+```
+
+### k8s/namespace.yaml
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: raju
+```
+
+### k8s/monitoring/kustomization.yaml
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - prometheus-rbc.yaml
+  - prometheus-cm.yaml
+  - prometheus.yaml
+  - node-exporter.yaml
+  - postgres-exporter.yaml
+  - grafana.yaml
+  - kube-state.yaml
+```
+
+### k8s/monitoring/namespace.yaml
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+```
+
+### Deploy flow (GitOps)
+
+```bash
+# Koi bhi change karo
+nano ~/todo-app/k8s/backend.yaml
+
+# Git push karo — Flux automatically apply karega
+git add .
+git commit -m "Update backend image"
+git push
+
+# Flux 1-2 min mein sync karega — ya force karo
+flux reconcile source git todo-app-source
+```
+
+---
+
+## 10. Production Domain Setup
+
+### nip.io kaise kaam karta hai
+
+```
+http://todo.13.200.105.164.nip.io
+    │
+    ▼ nip.io DNS → 13.200.105.164
+    │
+EC2 port 80
+    │
+    ▼ socat tunnel
+    │
+Minikube 192.168.49.2:80
+    │
+    ▼ Nginx Ingress
+    ├── /api → backend-service:5000
+    └── /    → frontend-service:80
+```
+
+### Verify
+
+```bash
+nslookup todo.13.200.105.164.nip.io
+curl http://todo.13.200.105.164.nip.io/api/todos
+```
+
+---
+
+## 11. Monitoring — Prometheus + Grafana
+
+### Deploy (Flux se automatic hoga)
+
+```bash
+git add .
+git commit -m "Add monitoring stack"
+git push
+flux reconcile source git todo-app-source
+flux reconcile kustomization monitoring-deploy
+
+# Pods check
+kubectl get pods -n monitoring -w
+```
+
+### Kya monitor hoga
+
+| Component | Kya dekh sakte hain |
+|---|---|
+| Node Exporter | EC2 CPU, RAM, Disk, Network |
+| Kube State Metrics | Pod status, Deployment, HPA |
+| cAdvisor | Container CPU/RAM usage |
+| PostgreSQL Exporter | DB connections, queries, locks |
+| Prometheus | Sab metrics store |
+| Grafana | Visual dashboards |
+
+### Grafana Dashboards Import karo
+
+```
+http://13.200.105.164:32000
+Login: admin / admin123
+
+Left sidebar → Dashboards → Import
+```
+
+| Dashboard | ID | Kya dikhega |
+|---|---|---|
+| K8s Cluster Overview | `315` | Nodes, Pods, CPU, RAM |
+| Node Exporter Full | `1860` | EC2 system metrics |
+| PostgreSQL Database | `9628` | DB queries, connections |
+| K8s Pod Monitoring | `6417` | Per-pod metrics |
+| Kubernetes Deployments | `8588` | Deployment status |
+
+### Prometheus Queries (useful)
+
+```
+# Pod CPU usage
+rate(container_cpu_usage_seconds_total{namespace="raju"}[5m])
+
+# Pod Memory usage
+container_memory_usage_bytes{namespace="raju"}
+
+# DB connections
+pg_stat_activity_count
+
+# Pod restart count
+kube_pod_container_status_restarts_total{namespace="raju"}
+
+# Node CPU
+100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+```
+
+---
+
+## 12. CDC Pipeline Setup
+
+### Folder Structure
+
+```
+todo-app/cdc-stack/
+├── docker-compose.yml
+├── logstash.conf
+├── debezium-connector.json
+├── register-connector.sh
+├── setup-elasticsearch.sh
+└── restart-cdc.sh
+```
+
+### Start Stack
+
+```bash
+cd ~/todo-app/cdc-stack
+docker-compose up -d
+sleep 60
+docker-compose ps    # sabka healthy hona chahiye
+```
+
+### Setup
+
+```bash
+chmod +x *.sh
+
+# Elasticsearch index banao
+./setup-elasticsearch.sh
+
+# Debezium connector register karo
+./register-connector.sh
+
+# Verify
+curl -s http://localhost:8083/connectors/postgres-connector/status | python3 -m json.tool
+```
+
+### Live CDC Test
+
+```bash
+# Insert karo
+sudo -u postgres psql -d my_todo_db -c "
+INSERT INTO todos (title, description, priority)
+VALUES ('CDC Test', 'Pipeline test', 'high');
+"
+
+sleep 15
+
+# Elasticsearch mein check karo
+curl -s "http://localhost:9200/todos/_count?pretty"
+# count > 0 hona chahiye
+
+# Kafka topic check
+docker exec -it cdc-kafka kafka-topics --list --bootstrap-server localhost:9092
+# todo.public.todos dikhna chahiye
+```
+
+### Kibana Setup
+
+```
+1. http://13.200.105.164:5601
+2. Stack Management → Data Views → Create data view
+3. Name: todos, Index pattern: todos*, Timestamp: created_at
+4. Discover → todos select karo → Time range: Last 1 year
+```
+
+---
+
+## 13. Permanent Tunnels — systemd
+
+> Production mein socat nahi hota — yeh sirf Minikube/learning setup ke liye hai.
+
+### Port 80 — Todo App
 
 ```bash
 sudo tee /etc/systemd/system/minikube-tunnel80.service <<EOF
@@ -323,187 +743,45 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable minikube-tunnel80
 sudo systemctl start minikube-tunnel80
+```
+
+### Port 30090 + 32000 — Monitoring
+
+```bash
+sudo tee /etc/systemd/system/minikube-monitoring.service <<EOF
+[Unit]
+Description=Socat tunnels for Monitoring ports
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c '\
+  socat TCP-LISTEN:30090,fork TCP:192.168.49.2:30090 & \
+  socat TCP-LISTEN:32000,fork TCP:192.168.49.2:32000 &'
+ExecStop=/usr/bin/pkill -f "socat TCP-LISTEN"
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable minikube-monitoring
+sudo systemctl start minikube-monitoring
+```
+
+### All tunnels verify karo
+
+```bash
 sudo systemctl status minikube-tunnel80
+sudo systemctl status minikube-monitoring
+sudo ss -tlnp | grep -E ":80|:30090|:32000"
 ```
 
 ---
 
-## 8. Kubernetes Deployment
-
-### Folder Structure
-
-```
-todo-app/k8s/
-├── 00-namespace.yaml
-├── 01-configmap-secret.yaml
-├── 03-backend.yaml
-├── 04-frontend.yaml
-├── 05-ingress.yaml
-└── 06-hpa.yaml
-```
-
-### Deploy All
-
-```bash
-cd todo-app/k8s
-kubectl apply -f 00-namespace.yaml
-kubectl apply -f 01-configmap-secret.yaml
-kubectl apply -f 03-backend.yaml
-kubectl apply -f 04-frontend.yaml
-kubectl apply -f 05-ingress.yaml
-kubectl apply -f 06-hpa.yaml
-
-# Watch pods
-kubectl get pods -n todo-app -w
-```
-
-### Verify
-
-```bash
-# Logs check
-kubectl logs -f deployment/backend -n todo-app
-# Should show: Database initialized + Backend running on port 5000
-
-# API test
-curl http://todo.13.200.105.164.nip.io/api/todos
-# Should return JSON
-
-# All resources
-kubectl get all -n todo-app
-```
-
----
-
-## 9. Production Domain Setup
-
-### How nip.io works
-
-```
-http://todo.13.200.105.164.nip.io
-         │
-         ▼ (nip.io DNS → 13.200.105.164 automatically)
-         │
-    EC2 port 80
-         │
-         ▼ (socat tunnel)
-         │
-    Minikube 192.168.49.2:80
-         │
-         ▼ (Nginx Ingress)
-         ├── /api → backend-service:5000
-         └── /    → frontend-service:80
-```
-
-### Verify DNS
-
-```bash
-nslookup todo.13.200.105.164.nip.io
-# Should show: Address: 13.200.105.164
-```
-
----
-
-## 10. CDC Pipeline Setup
-
-### Folder Structure
-
-```
-todo-app/cdc-stack/
-├── docker-compose.yml
-├── logstash.conf
-├── debezium-connector.json
-├── register-connector.sh
-├── setup-elasticsearch.sh
-└── restart-cdc.sh
-```
-
-### Step 1: Start Stack
-
-```bash
-cd ~/todo-app/cdc-stack
-docker-compose up -d
-
-# Wait for healthy (2-3 minutes)
-docker-compose ps
-```
-
-### Step 2: Setup Elasticsearch Index
-
-```bash
-chmod +x setup-elasticsearch.sh
-./setup-elasticsearch.sh
-# Output: {"acknowledged":true}
-```
-
-### Step 3: Register Debezium Connector
-
-```bash
-chmod +x register-connector.sh
-./register-connector.sh
-
-# Verify — both should be RUNNING
-curl -s http://localhost:8083/connectors/postgres-connector/status | python3 -m json.tool
-```
-
-Expected:
-```json
-{
-  "connector": { "state": "RUNNING" },
-  "tasks": [{ "state": "RUNNING" }]
-}
-```
-
-### Step 4: Verify Data Flow
-
-```bash
-# Insert test data
-sudo -u postgres psql -d my_todo_db -c "
-INSERT INTO todos (title, description, priority)
-VALUES ('CDC Test', 'Pipeline test', 'high');
-"
-
-sleep 15
-
-# Check Kafka topic
-docker exec -it cdc-kafka kafka-topics --list --bootstrap-server localhost:9092
-# todo.public.todos should appear
-
-# Check Elasticsearch
-curl -s "http://localhost:9200/todos/_count?pretty"
-# count should be > 0
-
-# Check Logstash logs
-docker logs cdc-logstash --tail 20
-```
-
-### Step 5: Browser UIs
-
-| Service | URL |
-|---|---|
-| Todo App | http://todo.13.200.105.164.nip.io |
-| Kafka UI | http://13.200.105.164:8080 |
-| Kibana | http://13.200.105.164:5601 |
-| Elasticsearch | http://13.200.105.164:9200 |
-| Debezium API | http://13.200.105.164:8083 |
-
-### Kibana mein Data Dekhna
-
-```
-1. http://13.200.105.164:5601 kholo
-2. Left sidebar → Stack Management (⚙️)
-3. Kibana → Data Views → Create data view
-4. Name: todos
-   Index pattern: todos*
-   Timestamp: created_at
-5. Save karo
-6. Left sidebar → Discover (🔍)
-7. Dropdown mein "todos" select karo
-8. Time range: Last 1 year
-```
-
----
-
-## 11. Restart Guide — Next Time
+## 14. Restart Guide — Next Time
 
 > EC2 restart ke baad yeh order mein karo:
 
@@ -523,103 +801,98 @@ sudo systemctl start postgresql
 ```bash
 minikube start --driver=docker
 minikube status
-
-# Minikube IP confirm karo
-minikube ip    # 192.168.49.2 hona chahiye
+minikube ip    # 192.168.49.2 confirm karo
 ```
 
-### Step 3: socat tunnel start
+### Step 3: Tunnels start karo
 
 ```bash
 sudo systemctl start minikube-tunnel80
-sudo systemctl status minikube-tunnel80
+sudo systemctl start minikube-monitoring
+sudo systemctl status minikube-tunnel80 minikube-monitoring
 ```
 
-### Step 4: K8s pods check
+### Step 4: Flux verify karo
 
 ```bash
-kubectl get pods -n todo-app
-# Sabka 1/1 Running hona chahiye
+flux get kustomizations
+# todo-app-deploy aur monitoring-deploy dono Ready hone chahiye
 
 # Agar nahi hain
-cd ~/todo-app/k8s
-kubectl apply -f .
-kubectl get pods -n todo-app -w
+flux reconcile source git todo-app-source
+flux reconcile kustomization todo-app-deploy
+flux reconcile kustomization monitoring-deploy
 ```
 
-### Step 5: Todo App verify
+### Step 5: K8s pods check
+
+```bash
+kubectl get pods -n raju
+kubectl get pods -n monitoring
+# Sabka Running hona chahiye
+```
+
+### Step 6: Todo App verify
 
 ```bash
 curl http://todo.13.200.105.164.nip.io/api/todos
 # JSON response aana chahiye
-
-# Browser mein
-# http://todo.13.200.105.164.nip.io
 ```
 
-### Step 6: CDC stack start
+### Step 7: CDC stack start
 
 ```bash
 cd ~/todo-app/cdc-stack
 docker-compose up -d
 sleep 60
 docker-compose ps
-# Sabka healthy hona chahiye
-```
 
-### Step 7: Debezium connector check
-
-```bash
+# Debezium connector check
 curl -s http://localhost:8083/connectors/postgres-connector/status | python3 -m json.tool
 ```
 
-Agar FAILED ya 404 hai:
+### Step 8: Agar Debezium FAILED hai
+
 ```bash
 cd ~/todo-app/cdc-stack
 
-# Purana slot delete karo
+# Slot delete karo
 sudo -u postgres psql -d my_todo_db -c \
-  "SELECT pg_drop_replication_slot('debezium_slot');" 2>/dev/null || echo "slot nahi tha"
+  "SELECT pg_drop_replication_slot('debezium_slot');" 2>/dev/null || echo "ok"
 
-# Delete aur re-register
+# Re-register
 curl -X DELETE http://localhost:8083/connectors/postgres-connector 2>/dev/null
 sleep 5
 ./register-connector.sh
 ```
 
-### Step 8: Full verify
+### Step 9: Full verify
 
 ```bash
-# Kafka topics
-docker exec -it cdc-kafka kafka-topics --list --bootstrap-server localhost:9092
-# todo.public.todos dikhna chahiye
-
-# Test CDC pipeline
-sudo -u postgres psql -d my_todo_db -c "
-INSERT INTO todos (title, description, priority)
-VALUES ('Restart Test', 'Sab kaam kar raha hai', 'high');
-"
-sleep 15
-curl -s "http://localhost:9200/todos/_count?pretty"
-# count > 0 hona chahiye
+echo "=== Todo App ===" && curl -s http://todo.13.200.105.164.nip.io/api/todos | head -c 50
+echo "=== Prometheus ===" && curl -s http://localhost:30090/-/healthy
+echo "=== Grafana ===" && curl -s http://localhost:32000/api/health
+echo "=== Elasticsearch ===" && curl -s http://localhost:9200/_cluster/health?pretty
+echo "=== Kafka ===" && docker exec cdc-kafka kafka-topics --list --bootstrap-server localhost:9092
 ```
+
+### All URLs
+
+| URL | Service |
+|---|---|
+| http://todo.13.200.105.164.nip.io | Todo App |
+| http://13.200.105.164:30090 | Prometheus |
+| http://13.200.105.164:32000 | Grafana (admin/admin123) |
+| http://13.200.105.164:8080 | Kafka UI |
+| http://13.200.105.164:5601 | Kibana |
+| http://13.200.105.164:9200 | Elasticsearch |
+| http://13.200.105.164:8083 | Debezium API |
 
 ---
 
-## 12. All Files Content
+## 15. All K8s Files Content
 
-### todo-app/k8s/00-namespace.yaml
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: todo-app
-  labels:
-    app.kubernetes.io/name: todo-app
-```
-
-### todo-app/k8s/01-configmap-secret.yaml
+### k8s/configmap.yaml
 
 ```yaml
 ---
@@ -627,7 +900,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: todo-config
-  namespace: todo-app
+  namespace: raju
 data:
   DB_HOST: "192.168.49.1"
   DB_PORT: "5432"
@@ -635,21 +908,9 @@ data:
   DB_USER: "my_app_user"
   PORT: "5000"
   FRONTEND_URL: "http://frontend-service"
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: todo-secret
-  namespace: todo-app
-type: Opaque
-data:
-  DB_PASSWORD: MTIzNA==
 ```
 
-> `MTIzNA==` = `echo -n '1234' | base64`
-
-### todo-app/k8s/03-backend.yaml
+### k8s/backend.yaml
 
 ```yaml
 ---
@@ -657,9 +918,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
-  namespace: todo-app
-  labels:
-    app: backend
+  namespace: raju
 spec:
   replicas: 2
   selector:
@@ -737,7 +996,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: backend-service
-  namespace: todo-app
+  namespace: raju
 spec:
   selector:
     app: backend
@@ -747,7 +1006,7 @@ spec:
   type: ClusterIP
 ```
 
-### todo-app/k8s/04-frontend.yaml
+### k8s/frontend.yaml
 
 ```yaml
 ---
@@ -755,9 +1014,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: frontend
-  namespace: todo-app
-  labels:
-    app: frontend
+  namespace: raju
 spec:
   replicas: 2
   selector:
@@ -799,7 +1056,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: frontend-service
-  namespace: todo-app
+  namespace: raju
 spec:
   selector:
     app: frontend
@@ -809,19 +1066,18 @@ spec:
   type: ClusterIP
 ```
 
-### todo-app/k8s/05-ingress.yaml
+### k8s/ingress.yaml
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: todo-ingress
-  namespace: todo-app
+  namespace: raju
   annotations:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
-    # IMPORTANT: rewrite-target: / mat lagao
-    # Isse /api/todos → / ban jaata hai → "Cannot GET /" error
+    # IMPORTANT: rewrite-target: / mat lagao — /api path break hota hai
 spec:
   ingressClassName: nginx
   rules:
@@ -844,7 +1100,7 @@ spec:
                   number: 80
 ```
 
-### todo-app/k8s/06-hpa.yaml
+### k8s/hpa.yaml
 
 ```yaml
 ---
@@ -852,7 +1108,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: backend-hpa
-  namespace: todo-app
+  namespace: raju
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -873,7 +1129,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: frontend-hpa
-  namespace: todo-app
+  namespace: raju
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -890,341 +1146,30 @@ spec:
           averageUtilization: 70
 ```
 
-### todo-app/cdc-stack/docker-compose.yml
-
-```yaml
-version: '3.9'
-
-services:
-
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    container_name: cdc-zookeeper
-    restart: unless-stopped
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-    networks:
-      - cdc-net
-    healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc localhost 2181"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    container_name: cdc-kafka
-    restart: unless-stopped
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG_RETENTION_HOURS: 24
-    ports:
-      - "29092:29092"
-    networks:
-      - cdc-net
-    healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-
-  kafka-connect:
-    image: debezium/connect:2.4
-    container_name: cdc-debezium
-    restart: unless-stopped
-    depends_on:
-      kafka:
-        condition: service_healthy
-    environment:
-      BOOTSTRAP_SERVERS: kafka:9092
-      GROUP_ID: debezium-group
-      CONFIG_STORAGE_TOPIC: debezium_config
-      OFFSET_STORAGE_TOPIC: debezium_offsets
-      STATUS_STORAGE_TOPIC: debezium_status
-      CONFIG_STORAGE_REPLICATION_FACTOR: 1
-      OFFSET_STORAGE_REPLICATION_FACTOR: 1
-      STATUS_STORAGE_REPLICATION_FACTOR: 1
-    ports:
-      - "8083:8083"
-    networks:
-      - cdc-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
-    container_name: cdc-elasticsearch
-    restart: unless-stopped
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
-    ports:
-      - "9200:9200"
-    volumes:
-      - es_data:/usr/share/elasticsearch/data
-    networks:
-      - cdc-net
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-
-  logstash:
-    image: docker.elastic.co/logstash/logstash:8.11.0
-    container_name: cdc-logstash
-    restart: unless-stopped
-    environment:
-      - LS_JAVA_OPTS=-Xms256m -Xmx256m
-      - XPACK_MONITORING_ENABLED=false
-    volumes:
-      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    networks:
-      - cdc-net
-
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.11.0
-    container_name: cdc-kibana
-    restart: unless-stopped
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-    environment:
-      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
-    ports:
-      - "5601:5601"
-    networks:
-      - cdc-net
-
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: cdc-kafka-ui
-    restart: unless-stopped
-    depends_on:
-      - kafka
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
-    ports:
-      - "8080:8080"
-    networks:
-      - cdc-net
-
-volumes:
-  es_data:
-
-networks:
-  cdc-net:
-    driver: bridge
-```
-
-### todo-app/cdc-stack/logstash.conf
-
-```
-input {
-  kafka {
-    bootstrap_servers => "kafka:9092"
-    topics => ["todo.public.todos"]
-    codec => "json"
-    auto_offset_reset => "earliest"
-    group_id => "logstash-group"
-  }
-}
-
-filter {
-  if [after] {
-    mutate {
-      add_field => {
-        "title"       => "%{[after][title]}"
-        "completed"   => "%{[after][completed]}"
-        "priority"    => "%{[after][priority]}"
-        "created_at"  => "%{[after][created_at]}"
-        "updated_at"  => "%{[after][updated_at]}"
-        "todo_id"     => "%{[after][id]}"
-      }
-    }
-    mutate {
-      add_field => { "operation" => "%{op}" }
-    }
-    mutate {
-      remove_field => ["before", "after", "source", "transaction", "op", "ts_ms", "@version"]
-    }
-  }
-}
-
-output {
-  elasticsearch {
-    hosts => ["http://elasticsearch:9200"]
-    index => "todos"
-    document_id => "%{todo_id}"
-  }
-  stdout { codec => rubydebug }
-}
-```
-
-### todo-app/cdc-stack/debezium-connector.json
-
-```json
-{
-  "name": "postgres-connector",
-  "config": {
-    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
-    "database.hostname": "host.docker.internal",
-    "database.port": "5432",
-    "database.user": "my_app_user",
-    "database.password": "1234",
-    "database.dbname": "my_todo_db",
-    "topic.prefix": "todo",
-    "table.include.list": "public.todos",
-    "plugin.name": "pgoutput",
-    "slot.name": "debezium_slot",
-    "publication.name": "debezium_pub",
-    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "key.converter.schemas.enable": "false",
-    "value.converter.schemas.enable": "false",
-    "decimal.handling.mode": "string",
-    "snapshot.mode": "initial"
-  }
-}
-```
-
-### todo-app/cdc-stack/register-connector.sh
-
-```bash
-#!/bin/bash
-echo "⏳ Waiting for Kafka Connect to be ready..."
-until curl -sf http://localhost:8083/connectors > /dev/null; do
-  sleep 5
-  echo "  still waiting..."
-done
-
-echo "✅ Kafka Connect ready!"
-echo "📡 Registering Debezium PostgreSQL connector..."
-
-curl -X POST http://localhost:8083/connectors \
-  -H "Content-Type: application/json" \
-  -d @debezium-connector.json
-
-echo ""
-echo "✅ Connector registered! Status check:"
-sleep 3
-curl -s http://localhost:8083/connectors/postgres-connector/status | python3 -m json.tool
-```
-
-### todo-app/cdc-stack/setup-elasticsearch.sh
-
-```bash
-#!/bin/bash
-echo "⏳ Waiting for Elasticsearch..."
-until curl -sf http://localhost:9200/_cluster/health > /dev/null; do
-  sleep 5
-  echo "  still waiting..."
-done
-
-echo "✅ Elasticsearch ready!"
-echo "📊 Creating todos index with mapping..."
-
-curl -X PUT http://localhost:9200/todos \
-  -H "Content-Type: application/json" \
-  -d '{
-    "mappings": {
-      "properties": {
-        "todo_id":     { "type": "keyword" },
-        "title":       { "type": "text" },
-        "completed":   { "type": "boolean" },
-        "priority":    { "type": "keyword" },
-        "created_at":  { "type": "date" },
-        "updated_at":  { "type": "date" },
-        "operation":   { "type": "keyword" }
-      }
-    }
-  }'
-
-echo ""
-echo "✅ Elasticsearch index created!"
-```
-
-### todo-app/cdc-stack/restart-cdc.sh
-
-```bash
-#!/bin/bash
-echo "🔄 CDC Stack restart ho raha hai..."
-
-cd ~/todo-app/cdc-stack
-
-echo "⏳ Stack start ho raha hai..."
-docker-compose up -d
-
-echo "⏳ Services ready hone ka wait karo (60 sec)..."
-sleep 60
-
-echo "📊 Elasticsearch index bana rahe hain..."
-./setup-elasticsearch.sh
-
-echo "🗑️ Purana replication slot delete kar rahe hain..."
-sudo -u postgres psql -d my_todo_db -c \
-  "SELECT pg_drop_replication_slot('debezium_slot');" 2>/dev/null || echo "slot nahi tha"
-
-echo "🗑️ Purana connector delete kar rahe hain..."
-curl -X DELETE http://localhost:8083/connectors/postgres-connector 2>/dev/null
-sleep 5
-
-echo "📡 Connector register kar rahe hain..."
-./register-connector.sh
-
-echo ""
-echo "✅ CDC Stack ready!"
-docker-compose ps
-```
-
 ---
 
-## 13. Troubleshooting
+## 16. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `npm ci` fails | No package-lock.json | `npm install` use karo |
 | Docker build `EAI_AGAIN` | Docker DNS issue | `/etc/docker/daemon.json` mein `{"dns":["8.8.8.8","8.8.4.4"]}` |
 | `ErrImageNeverPull` | Wrong imagePullPolicy | `imagePullPolicy: Always` + full `username/image:tag` |
-| `ErrImagePull` pull denied | Username missing in image name | `2024dock/todo-backend:v1` use karo |
-| Backend "DB not ready" | Postgres sirf `127.0.0.1` pe | `listen_addresses = '*'` postgresql.conf mein |
-| Backend pods CrashLoopBackOff | Wrong DB credentials in ConfigMap | `kubectl get cm todo-config -n todo-app -o yaml` check karo |
-| `host.minikube.internal` resolve nahi | Docker driver support nahi | `DB_HOST: 192.168.49.1` use karo |
-| UI loads lekin "Failed to connect" | Frontend wrong API URL | Rebuild: `--build-arg REACT_APP_API_URL=http://todo.13.200.105.164.nip.io` |
+| Backend "DB not ready" | Postgres 127.0.0.1 pe | `listen_addresses = '*'` postgresql.conf mein |
+| `host.minikube.internal` resolve nahi | Docker driver | `DB_HOST: 192.168.49.1` use karo |
+| UI "Failed to connect to server" | Wrong API URL in image | Rebuild frontend with correct `REACT_APP_API_URL` |
 | `Cannot GET /` API pe | `rewrite-target: /` annotation | Ingress se yeh annotation hatao |
-| nip.io URL nahi khulta | socat tunnel nahi chal raha | `sudo systemctl start minikube-tunnel80` |
-| Minikube start fails (memory) | RAM kam hai | `minikube start --memory=6g` ya instance upgrade karo |
-| Debezium: `permission denied WAL sender` | REPLICATION permission nahi | `ALTER USER my_app_user REPLICATION;` |
-| Debezium: `must be superuser for publication` | User superuser nahi | `CREATE PUBLICATION debezium_pub FOR TABLE public.todos;` manually |
-| Debezium task FAILED restart ke baad | Replication slot already exists | `SELECT pg_drop_replication_slot('debezium_slot');` |
-| Elasticsearch count = 0 | Logstash/connector not running | `docker logs cdc-logstash --tail 20` check karo |
-| Kibana "No available fields" | Time range issue | Time range "Last 1 year" set karo |
-| CDC stack down ke baad connector missing | Connector restart se delete | `./restart-cdc.sh` chalao |
+| nip.io URL nahi khulta | socat tunnel band | `sudo systemctl start minikube-tunnel80` |
+| Minikube start fails | RAM kam | `minikube start --memory=6g` |
+| Flux sync nahi ho raha | Git credentials issue | `flux reconcile source git todo-app-source` |
+| Flux kustomization failed | YAML error ya namespace wrong | `flux logs --kind=Kustomization --name=todo-app-deploy` |
+| Monitoring pods pending | Namespace nahi bana | `k8s/monitoring/namespace.yaml` add karo |
+| Grafana nahi khulta | socat monitoring band | `sudo systemctl start minikube-monitoring` |
+| Debezium WAL permission | REPLICATION missing | `ALTER USER my_app_user REPLICATION;` |
+| Debezium publication error | Superuser chahiye | `CREATE PUBLICATION debezium_pub FOR TABLE public.todos;` manually |
+| Debezium FAILED restart ke baad | Replication slot exists | `SELECT pg_drop_replication_slot('debezium_slot');` |
+| Elasticsearch count = 0 | Logstash nahi chala | `docker logs cdc-logstash --tail 20` |
+| Kibana "No available fields" | Time range galat | Time range "Last 1 year" set karo |
 
 ---
 
@@ -1239,20 +1184,38 @@ todo-app/
 │   └── .env.example
 ├── frontend/
 │   ├── src/
-│   │   ├── App.js
-│   │   ├── App.css
-│   │   └── index.js
-│   ├── public/index.html
+│   ├── public/
 │   ├── Dockerfile
 │   ├── nginx.conf
 │   └── package.json
+├── clusters/
+│   └── my-cluster/
+│       ├── flux-system/
+│       │   ├── gotk-components.yaml
+│       │   ├── gotk-sync.yaml
+│       │   └── kustomization.yaml
+│       ├── todo-app-source.yaml
+│       ├── todo-app-kustomization.yaml
+│       └── monitoring-kustomization.yaml
 ├── k8s/
-│   ├── 00-namespace.yaml
-│   ├── 01-configmap-secret.yaml
-│   ├── 03-backend.yaml
-│   ├── 04-frontend.yaml
-│   ├── 05-ingress.yaml
-│   └── 06-hpa.yaml
+│   ├── kustomization.yaml
+│   ├── namespace.yaml
+│   ├── configmap.yaml
+│   ├── sealed-secrets.yaml
+│   ├── backend.yaml
+│   ├── frontend.yaml
+│   ├── ingress.yaml
+│   ├── hpa.yaml
+│   └── monitoring/
+│       ├── kustomization.yaml
+│       ├── namespace.yaml
+│       ├── prometheus-rbc.yaml
+│       ├── prometheus-cm.yaml
+│       ├── prometheus.yaml
+│       ├── node-exporter.yaml
+│       ├── postgres-exporter.yaml
+│       ├── grafana.yaml
+│       └── kube-state.yaml
 ├── cdc-stack/
 │   ├── docker-compose.yml
 │   ├── logstash.conf
@@ -1260,5 +1223,5 @@ todo-app/
 │   ├── register-connector.sh
 │   ├── setup-elasticsearch.sh
 │   └── restart-cdc.sh
-└── docker-compose.yml    (todo app local dev)
+└── docker-compose.yml
 ```

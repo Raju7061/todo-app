@@ -5,8 +5,6 @@ COPY package*.json ./
 COPY node_modules/ ./node_modules/
 COPY public/ ./public/
 COPY src/ ./src/
-ARG REACT_APP_API_URL=http://localhost:5000
-ENV REACT_APP_API_URL=$REACT_APP_API_URL
 RUN npm run build
 
 # Production stage — only Nginx + built files (tiny image)

@@ -80,8 +80,6 @@ spec:
               value: "admin123"
             - name: GF_USERS_ALLOW_SIGN_UP
               value: "false"
-            - name: GF_SERVER_ROOT_URL
-              value: "http://13.200.105.164:32000"
           volumeMounts:
             - name: storage
               mountPath: /var/lib/grafana

@@ -5,7 +5,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 2m0s
-  path: "./k8s"
+  path: "./k8s-cdc-stack"
   prune: true
   sourceRef:
     kind: GitRepository

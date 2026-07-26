@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: cdc-stack
+data:
+  logstash.conf: |
+    input {
+      kafka {
+        bootstrap_servers => "kafka:9092"
+        topics => ["todo.public.todos"]
+        codec => "json"
+      }
+    }
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch:9200"]
+        index => "todos-index"
+      }
+    }

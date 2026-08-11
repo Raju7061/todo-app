@@ -10,4 +10,3 @@ spec:
   sourceRef:
     kind: GitRepository
     name: todo-app-source
-   targetNamespace nahi — monitoring files mein khud namespace: monitoring likha hai

@@ -1,6 +1,3 @@
----
-# PostgreSQL Exporter — EC2 native postgres monitor karega
-# DB_HOST = 192.168.49.1 (Minikube gateway → EC2 host)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,7 +23,7 @@ spec:
           image: prometheuscommunity/postgres-exporter:v0.15.0
           env:
             - name: DATA_SOURCE_NAME
-              value: "postgresql://my_app_user:1234@192.168.49.1:5432/my_todo_db?sslmode=disable"
+              value: "postgresql://my_app_user:1234@postgres-service.raju.svc.cluster.local:5432/my_todo_db?sslmode=disable"
           ports:
             - containerPort: 9187
           resources:

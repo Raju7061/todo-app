@@ -10,4 +10,4 @@ data:
   DB_NAME: "my_todo_db"
   DB_USER: "my_app_user"
   PORT: "5000"
-  FRONTEND_URL: "http://frontend-service"
+  FRONTEND_URL: "*"

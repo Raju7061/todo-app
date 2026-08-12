@@ -1,13 +1,27 @@
 import { useState, useEffect, useCallback } from 'react';
 import './App.css';
 
-const API = process.env.REACT_APP_API_URL || "";
+// Fallback to local port-forwarded backend if REACT_APP_API_URL is missing
+const API = process.env.REACT_APP_API_URL || "http://localhost:5000";
 
 const PRIORITY_CONFIG = {
   high:   { label: 'High',   color: '#ff5c7c', dot: '🔴' },
   medium: { label: 'Medium', color: '#ffc947', dot: '🟡' },
   low:    { label: 'Low',    color: '#4ecca3', dot: '🟢' },
 };
+
+// Helper function to handle API responses safely
+async function safeFetchJson(url, options = {}) {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    throw new Error(`Server returned HTTP status ${res.status}`);
+  }
+  const contentType = res.headers.get("content-type");
+  if (!contentType || !contentType.includes("application/json")) {
+    throw new Error("Invalid response format (expected JSON)");
+  }
+  return await res.json();
+}
 
 function TodoForm({ onAdd }) {
   const [title, setTitle] = useState('');
@@ -21,16 +35,17 @@ function TodoForm({ onAdd }) {
     if (!title.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/todos`, {
+      const data = await safeFetchJson(`${API}/api/todos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, description, priority }),
       });
-      const data = await res.json();
       if (data.success) {
         onAdd(data.data);
         setTitle(''); setDescription(''); setPriority('medium'); setOpen(false);
       }
+    } catch (err) {
+      alert("Failed to create task: " + err.message);
     } finally { setLoading(false); }
   };
 
@@ -92,16 +107,19 @@ function TodoItem({ todo, onToggle, onDelete, onUpdate }) {
   const [priority, setPriority] = useState(todo.priority);
 
   const handleSave = async () => {
-    const res = await fetch(`${API}/api/todos/${todo.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, description, priority }),
-    });
-    const data = await res.json();
-    if (data.success) { onUpdate(data.data); setEditing(false); }
+    try {
+      const data = await safeFetchJson(`${API}/api/todos/${todo.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, description, priority }),
+      });
+      if (data.success) { onUpdate(data.data); setEditing(false); }
+    } catch (err) {
+      alert("Failed to save changes: " + err.message);
+    }
   };
 
-  const pc = PRIORITY_CONFIG[todo.priority];
+  const pc = PRIORITY_CONFIG[todo.priority] || PRIORITY_CONFIG.medium;
 
   if (editing) return (
     <div className="todo-item editing">
@@ -137,7 +155,7 @@ function TodoItem({ todo, onToggle, onDelete, onUpdate }) {
           <span className="priority-tag" style={{ color: pc.color, borderColor: pc.color }}>
             {pc.dot} {pc.label}
           </span>
-          <span className="todo-date">{new Date(todo.created_at).toLocaleDateString()}</span>
+          <span className="todo-date">{todo.created_at ? new Date(todo.created_at).toLocaleDateString() : ''}</span>
         </div>
       </div>
       <div className="todo-actions">
@@ -175,18 +193,20 @@ export default function App() {
       if (filter !== 'all') params.set('completed', filter === 'completed');
       if (priority !== 'all') params.set('priority', priority);
       if (search) params.set('search', search);
-      const res = await fetch(`${API}/api/todos?${params}`);
-      const data = await res.json();
+      
+      const data = await safeFetchJson(`${API}/api/todos?${params}`);
       if (data.success) setTodos(data.data);
       setError('');
-    } catch { setError('Failed to connect to server. Is the backend running?'); }
-    finally { setLoading(false); }
+    } catch (err) { 
+      setError('Failed to connect to server. Is the backend running?'); 
+    } finally { 
+      setLoading(false); 
+    }
   }, [filter, priority, search]);
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/stats`);
-      const data = await res.json();
+      const data = await safeFetchJson(`${API}/api/stats`);
       if (data.success) setStats(data.data);
     } catch {}
   }, []);
@@ -196,25 +216,34 @@ export default function App() {
   const handleAdd = (todo) => { setTodos(p => [todo, ...p]); fetchStats(); };
 
   const handleToggle = async (id) => {
-    const res = await fetch(`${API}/api/todos/${id}/toggle`, { method: 'PATCH' });
-    const data = await res.json();
-    if (data.success) { setTodos(p => p.map(t => t.id === id ? data.data : t)); fetchStats(); }
+    try {
+      const data = await safeFetchJson(`${API}/api/todos/${id}/toggle`, { method: 'PATCH' });
+      if (data.success) { setTodos(p => p.map(t => t.id === id ? data.data : t)); fetchStats(); }
+    } catch (err) {
+      alert("Failed to update status: " + err.message);
+    }
   };
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this task?')) return;
-    const res = await fetch(`${API}/api/todos/${id}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (data.success) { setTodos(p => p.filter(t => t.id !== id)); fetchStats(); }
+    try {
+      const data = await safeFetchJson(`${API}/api/todos/${id}`, { method: 'DELETE' });
+      if (data.success) { setTodos(p => p.filter(t => t.id !== id)); fetchStats(); }
+    } catch (err) {
+      alert("Failed to delete task: " + err.message);
+    }
   };
 
   const handleUpdate = (updated) => { setTodos(p => p.map(t => t.id === updated.id ? updated : t)); fetchStats(); };
 
   const clearCompleted = async () => {
     if (!window.confirm('Delete all completed tasks?')) return;
-    const res = await fetch(`${API}/api/todos/bulk/completed`, { method: 'DELETE' });
-    const data = await res.json();
-    if (data.success) { fetchTodos(); fetchStats(); }
+    try {
+      const data = await safeFetchJson(`${API}/api/todos/bulk/completed`, { method: 'DELETE' });
+      if (data.success) { fetchTodos(); fetchStats(); }
+    } catch (err) {
+      alert("Failed to clear completed tasks: " + err.message);
+    }
   };
 
   return (
